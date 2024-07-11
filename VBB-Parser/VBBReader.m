@@ -78,6 +78,8 @@ classdef VBBReader < handle
 
 
             parsedVBBFile = obj.vbbFile;
+
+            obj.fileReader.CloseFile();
         end
 
 
@@ -446,6 +448,10 @@ classdef VBBReader < handle
                     timestampData = swapbytes(timestampData);
                 end
 
+                % Convert these timestamps to seconds (cast to a double array first to avoid truncation)
+                % They are stored in 100us steps so we divide by 10,000 (or multiply by 1e-4) to get
+                % seconds
+                timestampData = double(timestampData) * 1e-4;
 
                 % For each channel in this sample group extract the data, typecast it, then add it to that ChannelDefinition's data array
                 for j = 1:length(groupData.channelLocations)
@@ -461,7 +467,6 @@ classdef VBBReader < handle
                     startIndex = groupData.channelStartIndex(j);
                     endIndex = groupData.channelEndIndex(j);
 
-
                     % Extract the channel bytes from the sample group instances 
                     channelDataBytes = groupData.instanceData(startIndex:endIndex, :);
                     % Reshape into a single column vector
@@ -475,9 +480,14 @@ classdef VBBReader < handle
                         channelData = swapbytes(channelData);
                     end
 
+                    
+                    % Convert the channel into a double array to prevent any rounding error issues 
+                    % when applying the scale and offset
+                    channelData = double(channelData);
+                                        
                     % Apply the channel scale and offset to each entry
                     channelData = (channelData * channelScale) + channelOffset;
-
+                    
 
                     % Put the extracted data into the end of the channel definition array 
                     obj.vbbFile.channelDefinitions(channelDefIndex).timestamps = [obj.vbbFile.channelDefinitions(channelDefIndex).timestamps; timestampData];
@@ -489,28 +499,50 @@ classdef VBBReader < handle
 
 
         function CorrectUTCMidnightRollovers(obj)
-            % For files that go over midnight UTC, the timestamp value
-            % will reset to zero. Thus, we need to find where this jump
-            % happens and add a day's worth of 100 microsecond increments to each
-            % subsequent timestamp
+           
             for i = 1:length(obj.vbbFile.channelDefinitions)
+                % Get the timestamps out for the channel
                 timestampData = obj.vbbFile.channelDefinitions(i).timestamps;
+                % Apply the UTC rollover correction
+                correctedTimestampData = CorrectUTCMidnightRolloverForChannel(obj, timestampData);
+                % Put the data back into the channel
+                obj.vbbFile.channelDefinitions(i).timestamps = correctedTimestampData;
 
-                timeDiffs = diff(timestampData);
-                % Because we're dealing with uint32, the rollover point
-                % will be 0 - 864,000,000, which as a uint32 will equal 0
-                % as uint's cannot show negative numbers
-                timeJumps = find(timeDiffs == 0);
 
-                % For each time jump, add 864,000,000 to the remaining timestamps
-                for j = 1:length(timeJumps)
-                    timestampData(timeJumps(j)+1:end) = timestampData(timeJumps(j)+1:end) + 864000000;
+                % If we're dealing with the 'time' channel then we also need to correct the data inside the channel
+                channelShortName = obj.vbbFile.channelDefinitions(i).shortName;
+                channelShortName = reshape(channelShortName, 1, []);
+                % Check to see if this channel is the 'time' channel
+                if (strcmp(channelShortName, "time"))
+                    timeChannel = obj.vbbFile.channelDefinitions(i).data;
+                    correctedTimeChannel = CorrectUTCMidnightRolloverForChannel(obj, timeChannel);
+                    obj.vbbFile.channelDefinitions(i).data = correctedTimeChannel;
                 end
-
-                % Now put the data back into the VBBFile struct
-                obj.vbbFile.channelDefinitions(i).timestamps = timestampData;
             end
         end
+        
+
+        function CorrectedTimestamps = CorrectUTCMidnightRolloverForChannel(obj, timestampData)
+            
+            % For files that go over midnight UTC, the timestamp value
+            % will reset to zero. Thus, we need to find where this jump
+            % happens and add a day's worth of seconds to each
+            % subsequent timestamp
+            timeDiffs = diff(timestampData);
+            
+            % The rollover point will be 0 - 86,400 (there are 86,400
+            % seconds in a day)
+            timeJumps = find(timeDiffs <= 0);
+
+            % For each time jump, add 86,400 to the remaining timestamps
+            for j = 1:length(timeJumps)
+                timestampData(timeJumps(j)+1:end) = timestampData(timeJumps(j)+1:end) + 86400;
+            end
+
+            CorrectedTimestamps = timestampData;
+            return;
+        end
+
 
         %% Simple VBB creation function
 
@@ -523,7 +555,6 @@ classdef VBBReader < handle
             % different frequencies. So, we output a struct that matches
             % the format of the VBO converter with each set of channels
             % recorded at the same frequency grouped together.
-
 
             recordedFrequencies = [];
             sameFrequencyChannels = struct('frequency', {}, 'channelDefinitions', {});
@@ -545,11 +576,9 @@ classdef VBBReader < handle
                     % Estimate the frequency of this channel
                     tempFrequency = (obj.vbbFile.channelDefinitions(i).timestamps(end) - obj.vbbFile.channelDefinitions(i).timestamps(1))/length(obj.vbbFile.channelDefinitions(i).timestamps);
                     % The above calculates the average time between samples in
-                    % 100 microsecond steps. Turn this into Hz (1/s)
+                    % seconds. Turn this into Hz (1/s)
                     %
-                    % 100us steps means we divide the value by 10,000 (or multiply by 1e-4) to get
-                    % seconds. Then do 1/timestep to get frequency
-                    tempFrequency = 10000/tempFrequency;
+                    tempFrequency = round(1/tempFrequency);
                 end
 
                 frequencyIndex = find(recordedFrequencies == tempFrequency);
@@ -569,27 +598,16 @@ classdef VBBReader < handle
             % Now go through each group of same-frequency channels in turn and align their samples
             for i = 1:length(recordedFrequencies)
                 [alignedChannels, alignedTimestamps] = obj.AlignChannelSamples(sameFrequencyChannels(i));
-
-                % Convert the aligned timestamps from 100microsecond steps
-                % to seconds
-                alignedTimestamps = double(alignedTimestamps) * 1e-4;
                 
-                % Check if alignedChannels has a 'time' array. if it does,
-                % replace it with the timestamps array converted into
-                % seconds. If there isn't an existing time channel then add
-                % one
-                timeChannelIndex = find(strcmp({alignedChannels.name}, 'time'));
+                % Add the GNSS timestamps as a separate array to the
+                % simpleVBBFile
+                gnssTimeName = reshape(char('time (GNSS)'), [], 1);
+                timeChannelStruct = struct('name', gnssTimeName, ...
+                    'units', 's', ...
+                    'data', alignedTimestamps);
 
-                if ~isempty(timeChannelIndex)
-                    % Replace the 'time' channel data with alignedTimestamps
-                    alignedChannels(timeChannelIndex).data = alignedTimestamps;
-                else
-                    timeChannelStruct = struct('name', 'time', ...
-                                               'units', 's', ...
-                                               'data', alignedTimestamps);
+                alignedChannels(end+1) = timeChannelStruct;
 
-                    alignedChannels(end+1) = timeChannelStruct;
-                end
 
                 % Create the field name dynamically using the frequency of
                 % the channel group
