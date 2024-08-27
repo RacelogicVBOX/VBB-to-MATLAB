@@ -97,6 +97,9 @@ function [channel, frequencyGroup] = FindChannel(simpleVBBFile, channelName)
         if (~isempty(channelIndex))
             channel = channels(channelIndex).data;
             return;
+        else
+            channel = [];
+            frequencyGroup = "Channel_Not_Found";
         end
     end
 end
@@ -106,8 +109,14 @@ function PlotSpeed(simpleVBBFile)
     % Input:
     % simpleVBBFile - a simpleVBBFile struct as output by VBBReader.m
 
-    [velocity, frequencyGroupName] = FindChannel(simpleVBBFile, 'velocity');
-    
+    channelName = "velocity";
+    [velocity, frequencyGroupName] = FindChannel(simpleVBBFile, channelName);
+    % If a channel with this name does not exist then stop
+    if (strcmp(frequencyGroupName, "Channel_Not_Found"))
+        fprintf('"%s" channel not found', channelName);
+        return;
+    end
+
     % Get the list of channels in this frequency group
     channels = simpleVBBFile.(frequencyGroupName);
     % Find the index of the channel called 'time'

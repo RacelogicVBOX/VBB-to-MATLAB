@@ -785,6 +785,17 @@ classdef VBBReader < handle
                     channelDef_Offset = obj.ReadPrimitive('double', 8);
                     channelDef_Metadata = obj.ParseVBBValue('string');
 
+
+                    % For some of the channel scales, we use decimal values which cannot be accurately 
+                    % represented in binary format. For these we will manually change the values to be
+                    % 'correct'.
+                    if (round(channelDef_Scale,3) == 0.001)
+                        channelDef_Scale = 0.001;
+                    elseif (round(channelDef_Scale,1) == 3.6)
+                        channelDef_Scale = 3.6;
+                    end
+
+
                     % Add this new entry to the file's Channel definitions map
                     channelDef_NewStruct = struct('channelID', channelDef_ID, ...
                                                   'groupID', channelDef_GroupID, ...
@@ -1051,10 +1062,14 @@ classdef VBBReader < handle
             % byte
             [string_as_bytes, isEoF] = obj.ReadVBBByteArray();
 
+            % Reverses the byte order for little endian files
+            if obj.fileEndianness == 'L'
+                string_as_bytes = string_as_bytes(end:-1:1);
+            end
+
             % Turn the byte array into a character array, then into a string.
             % We have to transpose the byte array into a column vector for the
             % MATLAB char function to work
-
             parsedString = native2unicode(string_as_bytes, 'UTF-8');
         end
 
@@ -1113,7 +1128,7 @@ classdef VBBReader < handle
                     while true
                         [byte, isEoF] = obj.fileReader.ReadBytes(1);
                         byte = int32(byte);
-                        encodedIntValue = encodedIntValue + bitshift(bitand(byte, 0x7F), shift);
+                        encodedIntValue = encodedIntValue + bitshift(bitand(byte, int32(0x7F)), shift);
 
                         % Mask the first bit in the byte, if it's not set then
                         % there are no other bytes to read for the int
