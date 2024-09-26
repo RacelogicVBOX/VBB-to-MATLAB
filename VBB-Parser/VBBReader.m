@@ -27,14 +27,14 @@ classdef VBBReader < handle
 
 
         % This is used to more efficiently extract data from the VBB file.
-        % We direct address this so the channel group in position 61 is the group with ID 61. 
+        % We direct address this so the channel group in position 61 is the group with ID 61.
         channelGroupData = struct('channelLocations', {}, 'channelStartIndex', {}, 'channelEndIndex', {}, 'groupLength', {}, 'instanceLocations', {}, 'instanceData', {});
 
     end
 
 
     methods
-    
+
         function parsedVBBFile = ReadVBBFile(obj, filePath)
             % The constructor for this class. Provide a VBB file path and
             % it will read the file in and validate the headers to ensure
@@ -45,7 +45,7 @@ classdef VBBReader < handle
             obj.fileEndianness = 'B';
             obj.SetEndiannessFlag();
             obj.samplesReached = false;
-            
+
             fprintf('Loading VBB file...\n');
 
             % Initialise the file reader and VBBFile objects
@@ -58,7 +58,7 @@ classdef VBBReader < handle
             % channel and group definitions. It will continue to read until
             % we reach a sample group
             obj.ReadVBBHeaders();
-            
+
             fprintf('Headers read\n');
 
             % Once the headers have been read we can set up for reading the
@@ -69,13 +69,16 @@ classdef VBBReader < handle
 
             % Now we can skip through the file, recording the positions of
             % each instance of a sample group
-            obj.ReadSampleGroupLocations(); 
-            
+            obj.ReadSampleGroupLocations();
+
             fprintf('Samples extracted\n');
             % With all the samples extracted we now need to correct any
             % timestamp jumps caused by a recording over midnight UTC
             obj.CorrectUTCMidnightRollovers();
 
+            % Reorder the channels based on the timestamps to correct if
+            % any samples were written to the file out of order
+            obj.OrderChannelsByTimestamp();
 
             parsedVBBFile = obj.vbbFile;
 
@@ -102,7 +105,7 @@ classdef VBBReader < handle
             end
 
 
-             % The next byte contains the format of the VBB file being dealt with
+            % The next byte contains the format of the VBB file being dealt with
             obj.formatVersion = obj.ReadPrimitive('uint8', 1);
 
             % The next 4 bytes contain the flags used to notify how the file is set up.
@@ -129,7 +132,7 @@ classdef VBBReader < handle
             % The next 8 bytes contain the datetime information for when the file was
             % last modified
             obj.vbbFile.fileLastModified = obj.ParseVBBValue('datetime');
-          
+
 
             % Read through the file until we reach data samples - this will
             % read in all of the channel/group/dictionary/EEPROM
@@ -143,7 +146,7 @@ classdef VBBReader < handle
             end
         end
 
-        
+
         function SetEndiannessFlag(obj)
             % Get the endianness of the computer that this code is being ran on if
             % not already obtained.
@@ -181,7 +184,7 @@ classdef VBBReader < handle
         %% Efficient sample reading functions
 
         function SetUpForSampleReading(obj)
-            % Sample reading works as follows: 
+            % Sample reading works as follows:
             % - logic/process of each step
             % ~ the resulting data structure
             %
@@ -192,7 +195,7 @@ classdef VBBReader < handle
             %   - using the locations of each instance for each sample
             %     group, slice the byte array to extract every instance of
             %     each sample group
-            %   ~ a 2D array, where each column is the raw bytes representing 
+            %   ~ a 2D array, where each column is the raw bytes representing
             %     each instance of a sample group in the file
             %
             %   - using the locations of each channel in a sample group,
@@ -201,8 +204,8 @@ classdef VBBReader < handle
             %   ~ a 2D array where each column is the raw bytes
             %     representing each instance of a channel in the file
             %
-            %   - transpose then typecast these arrays into the data type 
-            %     of the channel to get out the stored data for each 
+            %   - transpose then typecast these arrays into the data type
+            %     of the channel to get out the stored data for each
             %     channel in the file
             %   ~ a column vector of values representing the stored channel
             %     in the VBB file
@@ -213,18 +216,18 @@ classdef VBBReader < handle
             % to know the locations of each channel within a sample group.
             % We calculate while calculating the length of a sample group.
             %
-            % To speed things up, we use direct addressing for the sample 
+            % To speed things up, we use direct addressing for the sample
             % group definitions (we put sample group ID 14 at position 14
             % in the GroupDefinitions array). We also use direct addressing
             % for the channels given in each GroupDefinitions entry
             % (instead of Channel ID we provide the index of that channel
             % in the ChannelDefinitions struct).
-            
+
             longestChannelGroup = 0;
 
             % Go though the list of channel group definitions in the VBB
             for i = 1:length(obj.vbbFile.channelGroupDefinitions)
-                
+
                 groupID = obj.vbbFile.channelGroupDefinitions(i).groupID;
                 channelIDs = obj.vbbFile.channelGroupDefinitions(i).channelIDs;
                 numChannels = obj.vbbFile.channelGroupDefinitions(i).numChannels;
@@ -232,7 +235,7 @@ classdef VBBReader < handle
                 % Channel locations within the ChannelDefinitions struct
                 channelLocations = zeros(numChannels, 1);
 
-                % Length of the channel group. The 6 bytes at the start are the sample group record byte, 
+                % Length of the channel group. The 6 bytes at the start are the sample group record byte,
                 % the 4 timestamp bytes and then the sample group ID byte
                 groupLength = 1 + 4 + 1;
                 % Locations of each channel start and end within a channel group
@@ -252,13 +255,13 @@ classdef VBBReader < handle
                     if isempty(channelIndex)
                         error('ChannelID not found in channel definitions struct %d', channelIDs(j));
                     end
-                    
+
                     % Note the location of the channel in the channel definitions struct
                     channelLocations(j) = channelIndex;
 
                     % Note the start index of this channel in the channel group
                     channelStartIndices(j) = groupLength + 1;
-                    
+
                     % Get the channel type from the channel definitions struct
                     channelType = obj.vbbFile.channelDefinitions(channelIndex).valueType;
                     % Add the size of this channel to the group length
@@ -267,14 +270,14 @@ classdef VBBReader < handle
                     % Note the end index of this channel in the channel group
                     channelEndIndices(j) = groupLength;
                 end
-                
+
 
                 channelGroupData_NewStruct = struct('channelLocations', channelLocations, ...
-                                                    'channelStartIndex', channelStartIndices, ...
-                                                    'channelEndIndex', channelEndIndices, ...
-                                                    'groupLength', groupLength, ...
-                                                    'instanceLocations', [], ...
-                                                    'instanceData', []);
+                    'channelStartIndex', channelStartIndices, ...
+                    'channelEndIndex', channelEndIndices, ...
+                    'groupLength', groupLength, ...
+                    'instanceLocations', [], ...
+                    'instanceData', []);
 
                 % Add these calculated channel variables to the channelGroupData struct
                 obj.channelGroupData(groupID) = channelGroupData_NewStruct;
@@ -285,7 +288,7 @@ classdef VBBReader < handle
                     longestChannelGroup = groupLength;
                 end
             end
-            
+
             % Update the length of the buffer in the FileReader. It needs
             % to be the length of the longest channel group, plus an extra
             % 2 bytes to be sure
@@ -297,9 +300,9 @@ classdef VBBReader < handle
         function ReadSampleGroupLocations(obj)
             % This function reads through the file, jumping from each
             % sample group record ID byte to the next, making a note of the
-            % group ID for each sample and where it is.        
+            % group ID for each sample and where it is.
             isEoF = false;
-            
+
             % While we're not at both the end of the file and the end of
             % the current data section, keep looping
             while ~isEoF
@@ -314,15 +317,15 @@ classdef VBBReader < handle
                 % we can read the record identifier again) parse out the
                 % current section of data, then move on to the next section
                 if isEoS
-                    
+
                     obj.fileReader.AdvanceThroughFile(-1);
-                   
+
                     % Extract the sample group bytes using their locations
                     % in the current data section. Then extract the
                     % channels from each sample group
                     obj.ExtractSampleGroupData();
                     obj.ExtractChannelData();
-                    
+
                     isEoF = obj.fileReader.ReadNextSection();
 
                     % Make sure to reset the instance locations for the
@@ -354,13 +357,13 @@ classdef VBBReader < handle
 
                 % Get the struct for the group ID
                 groupLength = obj.channelGroupData(groupID).groupLength;
-                
-                % Note where this sample group appears in the file. We want the location of the record ID, 
+
+                % Note where this sample group appears in the file. We want the location of the record ID,
                 % so go back enough bytes to cover the read group ID, 4 timestamp bytes and the record ID byte
                 obj.channelGroupData(groupID).instanceLocations(end + 1) = obj.fileReader.sectionIndex - 6;
 
                 % Advance through the file to the next sample group location - use the length of this sample group to do so
-                % but subtract 6 as the group length includes the group ID byte we've just read, the 4 timestamp bytes and 
+                % but subtract 6 as the group length includes the group ID byte we've just read, the 4 timestamp bytes and
                 % the record ID byte
                 obj.fileReader.AdvanceThroughFile(groupLength - 6);
             end
@@ -383,12 +386,12 @@ classdef VBBReader < handle
             % This function can only run once the positions of each sample
             % group have been found in the byte array. We take the indices
             % of each sample group
-            
+
             % Let's manipulate the VBB byte array into sample group sections
             for i = 1:length(obj.channelGroupData)
 
-                % Make sure there's a channel group at this position in the struct (this accounts for our direct 
-                % addressing of sample groups). It also solves issues if we have a channel group defined and no 
+                % Make sure there's a channel group at this position in the struct (this accounts for our direct
+                % addressing of sample groups). It also solves issues if we have a channel group defined and no
                 % samples were written to the VBB file.
                 if isempty(obj.channelGroupData(i).instanceLocations)
                     continue;
@@ -410,7 +413,7 @@ classdef VBBReader < handle
                 % in the sample group.
                 indices = startLocations + offsets;
 
-                % Index into the VBB byte array using the indices matrix. This effectively takes each element in the indices 
+                % Index into the VBB byte array using the indices matrix. This effectively takes each element in the indices
                 % matrix and replaces its value with the corresponding value at that index in the byte array.
                 dataMatrix = obj.fileReader.sectionArray(indices);
 
@@ -429,7 +432,7 @@ classdef VBBReader < handle
 
             % Loop through each Sample Group definition
             for i = 1:length(obj.channelGroupData)
-                
+
                 groupData = obj.channelGroupData(i);
 
                 % Make sure there's data in here
@@ -467,7 +470,7 @@ classdef VBBReader < handle
                     startIndex = groupData.channelStartIndex(j);
                     endIndex = groupData.channelEndIndex(j);
 
-                    % Extract the channel bytes from the sample group instances 
+                    % Extract the channel bytes from the sample group instances
                     channelDataBytes = groupData.instanceData(startIndex:endIndex, :);
                     % Reshape into a single column vector
                     channelDataBytes = reshape(channelDataBytes, [], 1);
@@ -480,16 +483,16 @@ classdef VBBReader < handle
                         channelData = swapbytes(channelData);
                     end
 
-                    
-                    % Convert the channel into a double array to prevent any rounding error issues 
+
+                    % Convert the channel into a double array to prevent any rounding error issues
                     % when applying the scale and offset
                     channelData = double(channelData);
-                                        
+
                     % Apply the channel scale and offset to each entry
                     channelData = (channelData * channelScale) + channelOffset;
-                    
 
-                    % Put the extracted data into the end of the channel definition array 
+
+                    % Put the extracted data into the end of the channel definition array
                     obj.vbbFile.channelDefinitions(channelDefIndex).timestamps = [obj.vbbFile.channelDefinitions(channelDefIndex).timestamps; timestampData];
                     obj.vbbFile.channelDefinitions(channelDefIndex).data = [obj.vbbFile.channelDefinitions(channelDefIndex).data; channelData];
                 end
@@ -499,7 +502,7 @@ classdef VBBReader < handle
 
 
         function CorrectUTCMidnightRollovers(obj)
-           
+
             for i = 1:length(obj.vbbFile.channelDefinitions)
                 % Get the timestamps out for the channel
                 timestampData = obj.vbbFile.channelDefinitions(i).timestamps;
@@ -520,19 +523,20 @@ classdef VBBReader < handle
                 end
             end
         end
-        
+
 
         function CorrectedTimestamps = CorrectUTCMidnightRolloverForChannel(obj, timestampData)
-            
+
             % For files that go over midnight UTC, the timestamp value
             % will reset to zero. Thus, we need to find where this jump
             % happens and add a day's worth of seconds to each
             % subsequent timestamp
             timeDiffs = diff(timestampData);
-            
+
             % The rollover point will be 0 - 86,400 (there are 86,400
-            % seconds in a day)
-            timeJumps = find(timeDiffs <= 0);
+            % seconds in a day). Put in 1s leeway incase a sample was
+            % missed either side
+            timeJumps = find(timeDiffs < -86399);
 
             % For each time jump, add 86,400 to the remaining timestamps
             for j = 1:length(timeJumps)
@@ -543,6 +547,21 @@ classdef VBBReader < handle
             return;
         end
 
+        
+        function OrderChannelsByTimestamp(obj)
+            % This function MUST be called after the UTC rollovers have been corrected. It takes the 
+            % corrected timestamps and reorderes them in ascending order. Then the channels are
+            % reordered in the same way
+
+              for i = 1:length(obj.vbbFile.channelDefinitions)
+                % Get the timestamps out for the channel
+                timestampData = obj.vbbFile.channelDefinitions(i).timestamps;
+
+                [obj.vbbFile.channelDefinitions(i).timestamps, sortedIndices] = sort(timestampData);
+                obj.vbbFile.channelDefinitions(i).data = obj.vbbFile.channelDefinitions(i).data(sortedIndices);
+              end
+        end
+
 
         %% Simple VBB creation function
 
@@ -550,7 +569,7 @@ classdef VBBReader < handle
             % This takes the VBBFile object as extracted from a VBB file
             % and simplifies it to match the output of F_vboload in
             % Racelogic's VBO-MATLAB v1.5 converter MATLAB script
-            % 
+            %
             % However, VBB files can contain channels logged at
             % different frequencies. So, we output a struct that matches
             % the format of the VBO converter with each set of channels
@@ -563,11 +582,11 @@ classdef VBBReader < handle
             % frequency. Otherwise we'll get arrays filled with NaN values
             % for the lower frequency channels
             for i = 1:length(obj.vbbFile.channelDefinitions)
-                
+
                 % If the channel has no samples then skip it
                 if isempty(obj.vbbFile.channelDefinitions(i).timestamps)
                     continue;
-                % See if the timestamps array has 1 element (ie it is scalar)
+                    % See if the timestamps array has 1 element (ie it is scalar)
                 elseif isscalar(obj.vbbFile.channelDefinitions(i).timestamps)
                     % If there is only 1 entry in this timestamp array then
                     % set the frequency to 0
@@ -598,7 +617,7 @@ classdef VBBReader < handle
             % Now go through each group of same-frequency channels in turn and align their samples
             for i = 1:length(recordedFrequencies)
                 [alignedChannels, alignedTimestamps] = obj.AlignChannelSamples(sameFrequencyChannels(i));
-                
+
                 % Add the GNSS timestamps as a separate array to the
                 % simpleVBBFile
                 gnssTimeName = reshape(char('time (GNSS)'), [], 1);
@@ -621,6 +640,7 @@ classdef VBBReader < handle
 
 
         function [alignedChannels, allTimestamps] = AlignChannelSamples(~, sameFrequencyChannels)
+
             % We take each channel's timestamp array and combine them into a
             % single unique array. We then match up each channel's
             % timestamp to the unique timestamp array, inserting NaN for
@@ -669,8 +689,8 @@ classdef VBBReader < handle
 
                 % Add the data to the simpleVBB struct
                 alignedChannelStruct = struct('name', channelName, ...
-                                              'units', channelUnits, ...
-                                              'data', alignedChannel);
+                    'units', channelUnits, ...
+                    'data', alignedChannel);
 
                 alignedChannels(i) = alignedChannelStruct;
             end
@@ -717,7 +737,7 @@ classdef VBBReader < handle
 
                     % Add this new entry to the file's group definitions
                     groupDef_NewStruct = struct('groupID', groupDef_GroupID, ...
-                                                'groupName', groupDef_Name);
+                        'groupName', groupDef_Name);
                     obj.vbbFile.groupDefinitions(end + 1) = groupDef_NewStruct;
 
                 case 6
@@ -750,9 +770,9 @@ classdef VBBReader < handle
 
                     % Add this new entry to the file's dictionary
                     dictItem_NewStruct = struct('name', dictItem_Name, ...
-                                                'value', dictItem_Value, ...
-                                                'valueType', dictItem_ValueType, ...
-                                                'groupID', dictItem_GroupID);
+                        'value', dictItem_Value, ...
+                        'valueType', dictItem_ValueType, ...
+                        'groupID', dictItem_GroupID);
                     obj.vbbFile.dictionary(end + 1) = dictItem_NewStruct;
 
                 case 7
@@ -786,7 +806,7 @@ classdef VBBReader < handle
                     channelDef_Metadata = obj.ParseVBBValue('string');
 
 
-                    % For some of the channel scales, we use decimal values which cannot be accurately 
+                    % For some of the channel scales, we use decimal values which cannot be accurately
                     % represented in binary format. For these we will manually change the values to be
                     % 'correct'.
                     if (round(channelDef_Scale,3) == 0.001)
@@ -798,16 +818,16 @@ classdef VBBReader < handle
 
                     % Add this new entry to the file's Channel definitions map
                     channelDef_NewStruct = struct('channelID', channelDef_ID, ...
-                                                  'groupID', channelDef_GroupID, ...
-                                                  'shortName', channelDef_ShortName, ...
-                                                  'longName', channelDef_LongName, ...
-                                                  'units', channelDef_Units, ...
-                                                  'valueType', channelDef_ValueType, ...
-                                                  'scale', channelDef_Scale, ...
-                                                  'offset', channelDef_Offset, ...
-                                                  'metaData', channelDef_Metadata, ...
-                                                  'timestamps', [], ...
-                                                  'data', []);
+                        'groupID', channelDef_GroupID, ...
+                        'shortName', channelDef_ShortName, ...
+                        'longName', channelDef_LongName, ...
+                        'units', channelDef_Units, ...
+                        'valueType', channelDef_ValueType, ...
+                        'scale', channelDef_Scale, ...
+                        'offset', channelDef_Offset, ...
+                        'metaData', channelDef_Metadata, ...
+                        'timestamps', [], ...
+                        'data', []);
                     obj.vbbFile.channelDefinitions(end + 1) = channelDef_NewStruct;
 
                 case 8
@@ -836,8 +856,8 @@ classdef VBBReader < handle
 
                     % Add this new entry to the channel group definitions
                     channelGroup_NewStruct = struct('groupID', channelGroup_ID, ...
-                                                    'numChannels', channelGroup_NumChannels, ...
-                                                    'channelIDs', channelGroup_ChannelIDArray);
+                        'numChannels', channelGroup_NumChannels, ...
+                        'channelIDs', channelGroup_ChannelIDArray);
                     obj.vbbFile.channelGroupDefinitions(end + 1) = channelGroup_NewStruct;
 
                 case 9
@@ -890,9 +910,9 @@ classdef VBBReader < handle
 
                     % Add this new entry to the Binary Dump
                     binDump_NewStruct = struct('name', binDump_Name, ...
-                                               'value', binDump_Value, ...
-                                               'valueType', binDump_ValueType, ...
-                                               'blockType', binDump_BlockType);
+                        'value', binDump_Value, ...
+                        'valueType', binDump_ValueType, ...
+                        'blockType', binDump_BlockType);
                     obj.vbbFile.binaryDump(end + 1) = binDump_NewStruct;
 
                 otherwise
@@ -900,7 +920,7 @@ classdef VBBReader < handle
                     % file reader to the end of the file and only read the
                     % data up to this point
                     fprintf('This file contains an unexpected VBB record type %d. No data will be loaded past this point.\n', vbbRecordID);
-                    
+
                     % Advance the file reader to the end of the file
                     obj.fileReader.AdvanceThroughFile(obj.fileReader.fileArrayLength);
             end
@@ -910,7 +930,7 @@ classdef VBBReader < handle
 
         %% Data type parsing functions
 
-        % These functions are used to parse individual data types out of a VBB file. 
+        % These functions are used to parse individual data types out of a VBB file.
         % These include primitive types (uint8, int64, etc..) as well as
         % custom VBB data types (datetime, 7 bit encoded string, etc...)
 
